@@ -10,16 +10,21 @@ Products 数据更新脚本
 匹配键: 产品ID
 
 策略: ID匹配成功->覆盖映射字段; 匹配失败->追加新行
+每次执行前自动在目标文件同级的 snapshots/ 目录创建快照，可通过 --undo 回溯到上一次执行前的状态。
 
 用法:
   python update_products.py
   python update_products.py --source "D:\Downloads\Products-2026-05-02.xls"
-  python update_products.py --source "D:\Downloads\Products-2026-05-02.xls" --target "D:\Downloads\...分析表.xlsx" --dry-run
+  python update_products.py --source "..." --target "..." --dry-run
+  python update_products.py --undo            # 撤销上一次修改
+  python update_products.py --list-snapshots  # 列出所有快照
+  python update_products.py --no-snapshot     # 跳过本次快照创建
 """
 
 import argparse
 import os
 import re
+import shutil
 import sys
 import glob as glob_mod
 from datetime import datetime
@@ -38,6 +43,7 @@ SOURCE_DIR = r"G:\阿里巴巴数据管家\阿里巴巴数据分析汇总\业务
 TARGET_DIR = r"\\192.168.1.10\zjh\社媒表汇总\社媒重要数据报表"
 TARGET_FILENAME = "一：产品数据记录分析优化表_工作中.xlsx"
 TARGET_SHEET = "良友效果好的产品变化"
+SNAPSHOT_DIR_NAME = "snapshots"  # 快照存放目录（位于目标文件同级）
 SOURCE_HEADER_ROW = 6          # Products 表标题行在 Excel 中的行号 (1-based)
 TARGET_HEADER_ROW = 2          # 分析表标题行在 Excel 中的行号 (1-based)
 TARGET_DATA_START_ROW = 3      # 分析表数据起始行号 (1-based)
@@ -298,6 +304,32 @@ def normalize_id(val) -> str:
         return str(val).strip()
 
 
+def create_snapshot(target_path: str, snapshot_dir: str) -> str:
+    """在 snapshots 目录下创建目标文件的带时间戳副本，返回快照路径。"""
+    os.makedirs(snapshot_dir, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(target_path))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot_name = f"{base}_snapshot_{timestamp}{ext}"
+    snapshot_path = os.path.join(snapshot_dir, snapshot_name)
+    shutil.copy2(target_path, snapshot_path)
+    print(f"[快照] 已创建: {snapshot_name}")
+    return snapshot_path
+
+
+def list_snapshots(snapshot_dir: str) -> list[str]:
+    """列出所有快照文件，按文件名倒序（最新的在前）。"""
+    if not os.path.isdir(snapshot_dir):
+        return []
+    files = glob_mod.glob(os.path.join(snapshot_dir, "*_snapshot_*.xlsx"))
+    files.sort(reverse=True)
+    return files
+
+
+def restore_from_snapshot(target_path: str, snapshot_path: str) -> None:
+    """用指定快照覆盖目标文件。"""
+    shutil.copy2(snapshot_path, target_path)
+
+
 def update_analysis(
     target_path: str,
     source_rows: list[dict],
@@ -413,9 +445,65 @@ def main():
         default=TARGET_DIR,
         help=f"目标分析表所在目录 (默认: {TARGET_DIR})",
     )
+    parser.add_argument(
+        "--undo",
+        action="store_true",
+        help="撤销上一次修改：从最新快照恢复目标文件",
+    )
+    parser.add_argument(
+        "--list-snapshots",
+        action="store_true",
+        help="列出所有可用快照",
+    )
+    parser.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help="跳过本次执行前的快照创建",
+    )
     args = parser.parse_args()
 
-    # 1. 确定源文件
+    # 1. 确定目标文件（undo/list 模式只需要目标路径）
+    if args.target:
+        target_path = args.target
+    else:
+        target_path = os.path.join(args.target_dir, TARGET_FILENAME)
+
+    snapshot_dir = os.path.join(os.path.dirname(target_path), SNAPSHOT_DIR_NAME)
+
+    # --- 列出快照（无需源文件） ---
+    if args.list_snapshots:
+        snapshots = list_snapshots(snapshot_dir)
+        if not snapshots:
+            print("[快照] 暂无可用快照")
+        else:
+            print(f"[快照] 共 {len(snapshots)} 个快照 (位于 {snapshot_dir}):")
+            for i, sp in enumerate(snapshots):
+                mtime = datetime.fromtimestamp(os.path.getmtime(sp))
+                print(f"  {i + 1}. {os.path.basename(sp)}  ({mtime:%Y-%m-%d %H:%M:%S})")
+        sys.exit(0)
+
+    # --- 撤销模式（无需源文件） ---
+    if args.undo:
+        if not os.path.exists(target_path):
+            print(f"[错误] 目标文件不存在: {target_path}")
+            sys.exit(1)
+        snapshots = list_snapshots(snapshot_dir)
+        if not snapshots:
+            print("[撤销] 没有可用的快照，无法撤销")
+            sys.exit(1)
+        latest = snapshots[0]
+        print(f"[撤销] 准备从快照恢复: {os.path.basename(latest)}")
+        # 恢复前先对当前文件做一次快照，确保撤销操作本身可回溯
+        create_snapshot(target_path, snapshot_dir)
+        restore_from_snapshot(target_path, latest)
+        print(f"[撤销] 已恢复到: {target_path}")
+        sys.exit(0)
+
+    if not os.path.exists(target_path):
+        print(f"[错误] 目标文件不存在: {target_path}")
+        sys.exit(1)
+
+    # 2. 确定源文件
     if args.source:
         source_path = args.source
     else:
@@ -429,19 +517,13 @@ def main():
         print(f"[错误] 源文件不存在: {source_path}")
         sys.exit(1)
 
-    # 2. 确定目标文件
-    if args.target:
-        target_path = args.target
-    else:
-        target_path = os.path.join(args.target_dir, TARGET_FILENAME)
-
-    if not os.path.exists(target_path):
-        print(f"[错误] 目标文件不存在: {target_path}")
-        sys.exit(1)
-
     print(f"[目标] {target_path}")
     print(f"[源文件] {source_path}")
     print()
+
+    # --- 每次执行前创建快照（除非显式跳过或试运行） ---
+    if not args.dry_run and not args.no_snapshot:
+        create_snapshot(target_path, snapshot_dir)
 
     # 3. 读取源数据
     source_rows = read_products_source(source_path)
