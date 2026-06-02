@@ -27,6 +27,7 @@ from engine import (
     find_latest_products_file, read_products_source,
     analyze_changes, execute_update,
     create_snapshot, list_snapshots, restore_from_snapshot,
+    cleanup_snapshots,
     archive_source, UpdateStats, ChangeDetail,
 )
 
@@ -175,6 +176,10 @@ class FileFrame(Frame):
                font=FONT_SMALL, bg=COLOR_DANGER, fg=COLOR_WHITE,
                relief='flat', padx=10, pady=3).pack(pady=2)
 
+        Button(snap_btn_frame, text='清理快照', command=self._cleanup_snapshots,
+               font=FONT_SMALL, bg=COLOR_WARNING, fg=COLOR_WHITE,
+               relief='flat', padx=10, pady=3).pack(pady=2)
+
         Button(snap_btn_frame, text='刷新列表', command=self._refresh_snapshots,
                font=FONT_SMALL, relief='flat', padx=10, pady=3).pack(pady=2)
 
@@ -275,6 +280,23 @@ class FileFrame(Frame):
                 self._refresh_snapshots()
             except Exception as e:
                 messagebox.showerror('撤销失败', str(e))
+
+    def _cleanup_snapshots(self):
+        if not self.app.target_path:
+            messagebox.showwarning('提示', '请先选择目标文件')
+            return
+        snapshot_dir = os.path.join(os.path.dirname(self.app.target_path), SNAPSHOT_DIR_NAME)
+        snapshots = list_snapshots(snapshot_dir)
+        if len(snapshots) <= 20:
+            messagebox.showinfo('提示', f'当前只有 {len(snapshots)} 个快照，无需清理（保留最近 20 个）')
+            return
+
+        if messagebox.askyesno('确认清理',
+                               f'共 {len(snapshots)} 个快照，将删除最早的 {len(snapshots) - 20} 个，'
+                               f'保留最近 20 个。\n\n确定继续？'):
+            deleted = cleanup_snapshots(snapshot_dir, keep=20)
+            messagebox.showinfo('完成', f'已删除 {deleted} 个旧快照，保留最近 20 个')
+            self._refresh_snapshots()
 
     def refresh_snapshots(self):
         self._refresh_snapshots()
@@ -427,6 +449,10 @@ class ExecuteFrame(Frame):
                font=FONT_SMALL, bg=COLOR_DANGER, fg=COLOR_WHITE,
                relief='flat', padx=12, pady=6).pack(side=LEFT, padx=5)
 
+        Button(btn_row, text='清理快照', command=self._cleanup_snapshots,
+               font=FONT_SMALL, bg=COLOR_WARNING, fg=COLOR_WHITE,
+               relief='flat', padx=12, pady=6).pack(side=LEFT, padx=5)
+
         # ── Result output ──
         Label(self, text='执行日志', font=FONT_BOLD, bg=COLOR_BG).pack(anchor='w', pady=(5, 5))
 
@@ -543,6 +569,22 @@ class ExecuteFrame(Frame):
             messagebox.showerror('执行错误', str(e))
             self.execute_btn.config(state=NORMAL)
 
+    def _cleanup_snapshots(self):
+        if not self.app.target_path or not os.path.exists(self.app.target_path):
+            messagebox.showwarning('提示', '请先选择有效的目标文件')
+            return
+        snapshot_dir = os.path.join(os.path.dirname(self.app.target_path), SNAPSHOT_DIR_NAME)
+        snapshots = list_snapshots(snapshot_dir)
+        if len(snapshots) <= 20:
+            messagebox.showinfo('提示', f'当前只有 {len(snapshots)} 个快照，无需清理（保留最近 20 个）')
+            return
+        if messagebox.askyesno('确认清理',
+                               f'共 {len(snapshots)} 个快照，将删除最早的 {len(snapshots) - 20} 个，'
+                               f'保留最近 20 个。\n\n确定继续？'):
+            deleted = cleanup_snapshots(snapshot_dir, keep=20)
+            messagebox.showinfo('完成', f'已删除 {deleted} 个旧快照，保留最近 20 个')
+            self._log(f'[清理] 已删除 {deleted} 个旧快照，保留最近 20 个')
+
     def load_data(self):
         self.result_text.config(state=NORMAL)
         self.result_text.delete('1.0', END)
@@ -606,6 +648,8 @@ class ProductsUpdateApp(Tk):
         snap_menu.add_command(label='创建快照', command=self._manual_snapshot)
         snap_menu.add_separator()
         snap_menu.add_command(label='撤销 (Undo)', command=self._undo)
+        snap_menu.add_separator()
+        snap_menu.add_command(label='清理快照...', command=self._cleanup_snapshots)
         menubar.add_cascade(label='快照', menu=snap_menu)
 
         help_menu = Menu(menubar, tearoff=0)
@@ -813,6 +857,23 @@ class ProductsUpdateApp(Tk):
                     self.frames[0].refresh_snapshots()
             except Exception as e:
                 messagebox.showerror('撤销失败', str(e))
+
+    def _cleanup_snapshots(self):
+        if not self.target_path or not os.path.exists(self.target_path):
+            messagebox.showwarning('提示', '请先选择有效的目标文件')
+            return
+        snapshot_dir = os.path.join(os.path.dirname(self.target_path), SNAPSHOT_DIR_NAME)
+        snapshots = list_snapshots(snapshot_dir)
+        if len(snapshots) <= 20:
+            messagebox.showinfo('提示', f'当前只有 {len(snapshots)} 个快照，无需清理（保留最近 20 个）')
+            return
+        if messagebox.askyesno('确认清理',
+                               f'共 {len(snapshots)} 个快照，将删除最早的 {len(snapshots) - 20} 个，'
+                               f'保留最近 20 个。\n\n确定继续？'):
+            deleted = cleanup_snapshots(snapshot_dir, keep=20)
+            messagebox.showinfo('完成', f'已删除 {deleted} 个旧快照，保留最近 20 个')
+            if hasattr(self.frames[0], 'refresh_snapshots'):
+                self.frames[0].refresh_snapshots()
 
     def _show_about(self):
         messagebox.showinfo('关于', 'Products 数据更新工具 v2.0\n\n'

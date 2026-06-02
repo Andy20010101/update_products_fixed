@@ -431,6 +431,18 @@ def restore_from_snapshot(target_path: str, snapshot_path: str) -> None:
     shutil.copy2(snapshot_path, target_path)
 
 
+def cleanup_snapshots(snapshot_dir: str, keep: int = 20) -> int:
+    """清理旧快照，只保留最近 keep 个。返回删除的数量。"""
+    snapshots = list_snapshots(snapshot_dir)
+    if len(snapshots) <= keep:
+        return 0
+    deleted = 0
+    for sp in snapshots[keep:]:
+        os.remove(sp)
+        deleted += 1
+    return deleted
+
+
 def archive_source(source_path: str, source_dir: str) -> str:
     """将源文件移入 已处理 文件夹，返回归档路径。"""
     processed_dir = os.path.join(source_dir, "已处理")
