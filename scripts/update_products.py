@@ -270,6 +270,51 @@ def get_source_value(src_row: dict, src_col: int):
     return val
 
 
+def dedupe_source_rows(source_rows: list[dict]) -> tuple[list[dict], list[tuple[str, int]], int]:
+    """同一产品ID只保留最后一条，避免反馈合计被重复累加。"""
+    entries = {}
+    row_ids = []
+
+    for src_row in source_rows:
+        src_id = normalize_id(get_source_value(src_row, SRC["产品ID"]))
+        row_ids.append(src_id)
+        if not src_id:
+            continue
+        if src_id not in entries:
+            entries[src_id] = {"row": src_row, "count": 0}
+        entries[src_id]["row"] = src_row
+        entries[src_id]["count"] += 1
+
+    emitted = set()
+    deduped_rows = []
+    for src_row, src_id in zip(source_rows, row_ids):
+        if not src_id:
+            deduped_rows.append(src_row)
+            continue
+        if src_id in emitted:
+            continue
+        deduped_rows.append(entries[src_id]["row"])
+        emitted.add(src_id)
+
+    duplicate_ids = [
+        (src_id, data["count"])
+        for src_id, data in entries.items()
+        if data["count"] > 1
+    ]
+    duplicate_rows = sum(count - 1 for _, count in duplicate_ids)
+    return deduped_rows, duplicate_ids, duplicate_rows
+
+
+def duplicate_warning(duplicate_ids: list[tuple[str, int]], duplicate_rows: int) -> str:
+    sample = "、".join(f"{src_id}({count}条)" for src_id, count in duplicate_ids[:10])
+    if len(duplicate_ids) > 10:
+        sample += f" 等{len(duplicate_ids)}个ID"
+    return (
+        f"源文件中发现重复产品ID，已按每个ID最后一条记录处理；"
+        f"忽略 {duplicate_rows} 条重复记录: {sample}"
+    )
+
+
 def build_target_id_map(ws: openpyxl.worksheet.worksheet.Worksheet) -> dict:
     """构建分析表中 产品ID → 行号 的映射。
 
@@ -347,12 +392,22 @@ def update_analysis(
     ws = wb[TARGET_SHEET]
     id_map = build_target_id_map(ws)
 
-    stats = {"updated": 0, "appended": 0, "skipped": 0, "errors": []}
+    processed_rows, duplicate_ids, duplicate_rows = dedupe_source_rows(source_rows)
+    stats = {
+        "updated": 0,
+        "appended": 0,
+        "skipped": 0,
+        "deduplicated": duplicate_rows,
+        "errors": [],
+        "warnings": [],
+    }
+    if duplicate_ids:
+        stats["warnings"].append(duplicate_warning(duplicate_ids, duplicate_rows))
     new_rows = []
 
     id_col_src = SRC["产品ID"]
 
-    for i, src_row in enumerate(source_rows):
+    for i, src_row in enumerate(processed_rows):
         src_id_raw = get_source_value(src_row, id_col_src)
         src_id = normalize_id(src_id_raw)
         if not src_id:
@@ -551,6 +606,12 @@ def main():
     print(f"  更新已有行:    {stats['updated']}")
     print(f"  追加新行:      {stats['appended']}")
     print(f"  跳过 (无ID):   {stats['skipped']}")
+    print(f"  重复ID忽略:    {stats['deduplicated']}")
+
+    if stats["warnings"]:
+        print(f"\n警告:")
+        for w in stats["warnings"]:
+            print(f"  - {w}")
 
     if stats["errors"]:
         print(f"\n错误明细:")

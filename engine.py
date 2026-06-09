@@ -99,8 +99,10 @@ class UpdateStats:
     updated: int = 0
     appended: int = 0
     skipped: int = 0
+    deduplicated: int = 0
     changes: list = field(default_factory=list)  # list[ChangeDetail]
     errors: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
 
 
 # ============================================================
@@ -162,6 +164,50 @@ def _values_differ(old, new) -> bool:
     old_str = str(old).strip() if old is not None else ""
     new_str = str(new).strip() if new is not None else ""
     return old_str != new_str
+
+
+def _dedupe_source_rows(source_rows: list[dict]) -> tuple[list[dict], list[tuple[str, int]], int]:
+    entries = {}
+    row_ids = []
+
+    for src_row in source_rows:
+        src_id = normalize_id(get_source_value(src_row, SRC["产品ID"]))
+        row_ids.append(src_id)
+        if not src_id:
+            continue
+        if src_id not in entries:
+            entries[src_id] = {"row": src_row, "count": 0}
+        entries[src_id]["row"] = src_row
+        entries[src_id]["count"] += 1
+
+    emitted = set()
+    deduped_rows = []
+    for src_row, src_id in zip(source_rows, row_ids):
+        if not src_id:
+            deduped_rows.append(src_row)
+            continue
+        if src_id in emitted:
+            continue
+        deduped_rows.append(entries[src_id]["row"])
+        emitted.add(src_id)
+
+    duplicate_ids = [
+        (src_id, data["count"])
+        for src_id, data in entries.items()
+        if data["count"] > 1
+    ]
+    duplicate_rows = sum(count - 1 for _, count in duplicate_ids)
+    return deduped_rows, duplicate_ids, duplicate_rows
+
+
+def _duplicate_warning(duplicate_ids: list[tuple[str, int]], duplicate_rows: int) -> str:
+    sample = "、".join(f"{src_id}({count}条)" for src_id, count in duplicate_ids[:10])
+    if len(duplicate_ids) > 10:
+        sample += f" 等{len(duplicate_ids)}个ID"
+    return (
+        f"源文件中发现重复产品ID，已按每个ID最后一条记录处理；"
+        f"忽略 {duplicate_rows} 条重复记录: {sample}"
+    )
 
 
 # ============================================================
@@ -276,10 +322,13 @@ def analyze_changes(target_path: str, source_rows: list[dict]) -> UpdateStats:
     ws = wb[TARGET_SHEET]
     id_map = _build_target_id_map(ws)
 
-    stats = UpdateStats(total=len(source_rows))
+    processed_rows, duplicate_ids, duplicate_rows = _dedupe_source_rows(source_rows)
+    stats = UpdateStats(total=len(source_rows), deduplicated=duplicate_rows)
+    if duplicate_ids:
+        stats.warnings.append(_duplicate_warning(duplicate_ids, duplicate_rows))
     id_col_src = SRC["产品ID"]
 
-    for src_row in source_rows:
+    for src_row in processed_rows:
         src_id_raw = get_source_value(src_row, id_col_src)
         src_id = normalize_id(src_id_raw)
         if not src_id:
@@ -332,11 +381,14 @@ def execute_update(target_path: str, source_rows: list[dict]) -> UpdateStats:
     ws = wb[TARGET_SHEET]
     id_map = _build_target_id_map(ws)
 
-    stats = UpdateStats(total=len(source_rows))
+    processed_rows, duplicate_ids, duplicate_rows = _dedupe_source_rows(source_rows)
+    stats = UpdateStats(total=len(source_rows), deduplicated=duplicate_rows)
+    if duplicate_ids:
+        stats.warnings.append(_duplicate_warning(duplicate_ids, duplicate_rows))
     new_rows = []
     id_col_src = SRC["产品ID"]
 
-    for src_row in source_rows:
+    for src_row in processed_rows:
         src_id_raw = get_source_value(src_row, id_col_src)
         src_id = normalize_id(src_id_raw)
         if not src_id:

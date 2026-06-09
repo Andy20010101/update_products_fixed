@@ -327,6 +327,7 @@ class PreviewFrame(Frame):
             'updated': StringVar(value='更新: -'),
             'appended': StringVar(value='追加: -'),
             'skipped': StringVar(value='跳过: -'),
+            'deduplicated': StringVar(value='重复ID忽略: -'),
         }
         for key, var in self.summary_vars.items():
             Label(summary_frame, textvariable=var, font=FONT_BOLD,
@@ -383,6 +384,7 @@ class PreviewFrame(Frame):
             self.summary_vars['updated'].set(f'更新: {stats.updated}')
             self.summary_vars['appended'].set(f'追加: {stats.appended}')
             self.summary_vars['skipped'].set(f'跳过: {stats.skipped}')
+            self.summary_vars['deduplicated'].set(f'重复ID忽略: {stats.deduplicated}')
 
             # Populate tree
             self.tree.delete(*self.tree.get_children())
@@ -404,8 +406,12 @@ class PreviewFrame(Frame):
             self.tree.tag_configure('updated', background='#fff3cd')
             self.tree.tag_configure('appended', background='#d4edda')
 
-            self.status_label.config(
-                text=f'分析完成: {stats.updated} 行更新, {stats.appended} 行追加, {stats.skipped} 行跳过')
+            status = f'分析完成: {stats.updated} 行更新, {stats.appended} 行追加, {stats.skipped} 行跳过'
+            if stats.deduplicated:
+                status += f'，重复ID忽略 {stats.deduplicated} 行'
+            self.status_label.config(text=status)
+            if stats.warnings:
+                messagebox.showwarning('重复产品ID已处理', '\n'.join(stats.warnings))
         except Exception as e:
             self.status_label.config(text='分析失败')
             messagebox.showerror('分析错误', str(e))
@@ -599,6 +605,9 @@ class ExecuteFrame(Frame):
             self._log(f'  更新: {stats.updated} 行')
             self._log(f'  追加: {stats.appended} 行')
             self._log(f'  跳过: {stats.skipped} 行')
+            self._log(f'  重复ID忽略: {stats.deduplicated} 行')
+            for warning in stats.warnings:
+                self._log(f'  警告: {warning}')
             self._log('')
             self._log('点击"执行更新"开始操作...')
 
